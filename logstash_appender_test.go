@@ -1,9 +1,8 @@
 package go_logstash_appender
 
 import (
-	"fmt"
+	"github.com/stretchr/testify/assert"
 	"net"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,70 +22,35 @@ func TestNewPoolWithEmptyHostsAndFatalError(t *testing.T) {
 		ConnectionTimeout:   20,
 		ReconnectionTimeout: 10,
 	}
-	_ = config.createPoolOfZapLogger()
-}
-
-func TestNewPoolWithEmptyHostsAndWithoutFatalError(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("The code shouldn't be panicked %s", r)
-		}
-	}()
-
-	config := &LogstashConfig{
-		Hosts:               "",
-		Protocol:            "tcp",
-		BufferSize:          8192,
-		ConnectionTimeout:   20,
-		ReconnectionTimeout: 10,
-	}
-	_ = config.createPoolOfZapLogger()
+	var err error
+	assert.NotPanics(t, func() {
+		err = config.createPoolOfZapLogger()
+	}, "should not panic when creating pool of appender when no hosts are present")
+	assert.NoError(t, err, "should not get any errors on creating pool of appender when no hosts are present")
 }
 
 func TestConnectionOnUnknownHost(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("The code shouldn't be panicked %s", r)
-		}
-	}()
-
 	config := &LogstashConfig{
-		Hosts:               "127.0.0.1:9092",
+		Hosts:               "127.0.0.1:1",
 		Protocol:            "tcp",
 		BufferSize:          8192,
 		ConnectionTimeout:   20,
 		ReconnectionTimeout: 10,
 	}
-	logStashWriter := config.CreteLogStashAppender(config.Hosts)
 
-	if logStashWriter != nil {
-		t.Errorf("logstash should be created on nonexisting tcp host")
-	}
+	var logStashWriter *LogstashAppender
+
+	assert.NotPanics(t, func() {
+		logStashWriter = config.CreteLogStashAppender(config.Hosts)
+	}, "should not panic on constructing logstash appender")
+	assert.Nil(t, logStashWriter, "should not initiate logstash appender on non existing tcp host")
 }
 
 func TestConnectionOnKnownHost(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("The code should be panicked %s", r)
-		}
-	}()
-
-	listen, err := net.Listen("tcp", ":9092")
-
-	defer func(listen net.Listener) {
-		err := listen.Close()
-		if err != nil {
-			t.Errorf("cannot close tcp port: %s", err)
-		}
-	}(listen)
-
-	if err != nil {
-		t.Errorf("cannot open tcp port: %s", err)
-		return
-	}
-
+	listen, err := net.Listen("tcp", ":0")
+	assert.NoError(t, err, "should get any available port")
 	config := &LogstashConfig{
-		Hosts:               ":9092",
+		Hosts:               listen.Addr().String()[4:len(listen.Addr().String())],
 		Protocol:            "tcp",
 		BufferSize:          8192,
 		ConnectionTimeout:   20,
@@ -94,15 +58,14 @@ func TestConnectionOnKnownHost(t *testing.T) {
 	}
 	logStashWriter := config.CreteLogStashAppender(config.Hosts)
 
-	err = logStashWriter.Close()
-	if err != nil {
-		fmt.Println("unable to close logstashWriter: ", err.Error())
-		return
-	}
+	assert.NotNil(t, logStashWriter, "should construct appender on existing host and port")
+	assert.Equal(t, config.BufferSize, logStashWriter.buffer.Size(), "buffer size should be equal to configs")
 
-	if logStashWriter == nil {
-		t.Errorf("logstash should be created on existing tcp host and opened tcp port 9092")
-	}
+	err = logStashWriter.Close()
+
+	assert.NoError(t, err, "should close without err")
+	assert.Equal(t, config.BufferSize, logStashWriter.buffer.Size(), "buffer size should be equal to size which is specified on configs which means that buffer is empty")
+	assert.NotNil(t, logStashWriter.conn, "even if we closed the conn, it's should not been nil")
 }
 
 func TestWriteOnTcpThroughLogstashWithSmallBufferWriterSingleGoRoutine(t *testing.T) {
@@ -112,22 +75,16 @@ func TestWriteOnTcpThroughLogstashWithSmallBufferWriterSingleGoRoutine(t *testin
 		}
 	}()
 
-	tcp, err := net.Listen("tcp", ":9092")
+	tcp, err := net.Listen("tcp", ":0")
 
 	defer func(listen net.Listener) {
 		err := listen.Close()
-		if err != nil {
-			t.Errorf("cannot close tcp port: %s", err)
-		}
+		assert.NoError(t, err, "should close tcp server without any err")
 	}(tcp)
-
-	if err != nil {
-		t.Errorf("cannot open tcp port: %s", err)
-		return
-	}
+	assert.NoError(t, err, "should open tcp server without any err")
 
 	config := &LogstashConfig{
-		Hosts:               ":9092",
+		Hosts:               tcp.Addr().String()[4:len(tcp.Addr().String())],
 		Protocol:            "tcp",
 		BufferSize:          8,
 		ConnectionTimeout:   20,
@@ -135,48 +92,35 @@ func TestWriteOnTcpThroughLogstashWithSmallBufferWriterSingleGoRoutine(t *testin
 	}
 	logStashWriter := config.CreteLogStashAppender(config.Hosts)
 
-	if logStashWriter == nil {
-		t.Errorf("logstash should be created on existing tcp host and opened port 9092")
-	}
-
+	assert.NotNil(t, logStashWriter, "appender should be created on existing tcp host and opened port")
 	defer func(logStashWriter *LogstashAppender) {
 		err := logStashWriter.Close()
-		if err != nil {
-			t.Error("unable to close logstashWriter: ", err.Error())
-		}
+		assert.NoError(t, err, "should close logstash appender without any err")
 	}(logStashWriter)
 
 	testMessage := []byte("some random message which should represent log")
 
 	write, err := logStashWriter.Write(testMessage)
 
-	if err != nil || write != len(testMessage) {
-		t.Errorf("unable to write on opened tcp connection cause: %s", err.Error())
-	}
+	assert.NoError(t, err, "should write to appender without any errors")
+	assert.Equal(t, len(testMessage), write, "size of written bytes should be equal")
+
 	receivedMessage := make([]byte, len(testMessage))
 
 	incomingTcpChannel, err := tcp.Accept()
-	if err != nil {
-		t.Errorf("cannot accept message trough tcp port: %s", err)
-		return
-	}
+
+	assert.NoError(t, err, "should accept on tcp existing server")
+	assert.NotNil(t, incomingTcpChannel, "should get conn on which we can consume messages")
 
 	defer func(accept net.Conn) {
 		err := accept.Close()
-		if err != nil {
-			t.Errorf("cannot close reader channel: %s", err)
-		}
+		assert.NoError(t, err, "should close incoming channel without any err")
 	}(incomingTcpChannel)
 
 	read, err := incomingTcpChannel.Read(receivedMessage)
-	if err != nil || read != len(testMessage) {
-		t.Errorf("unable to read on opened tcp connection cause: %s", err.Error())
-		return
-	}
-
-	if string(testMessage) != string(receivedMessage) {
-		t.Errorf("%s not equal to %s", string(testMessage), string(receivedMessage))
-	}
+	assert.NoError(t, err, "should read from incoming channel without any err")
+	assert.Equal(t, len(testMessage), read, "should read all bytes")
+	assert.Equal(t, string(testMessage), string(receivedMessage), "send message should be equal to received")
 }
 
 func TestWriteOnTcpThroughLogstashWithSmallBufferWriterMultiplyGoRoutine(t *testing.T) {
@@ -186,22 +130,16 @@ func TestWriteOnTcpThroughLogstashWithSmallBufferWriterMultiplyGoRoutine(t *test
 		}
 	}()
 
-	tcp, err := net.Listen("tcp", ":9092")
+	tcp, err := net.Listen("tcp", ":0")
 
 	defer func(listen net.Listener) {
 		err := listen.Close()
-		if err != nil {
-			t.Errorf("cannot close tcp port: %s", err)
-		}
+		assert.NoError(t, err, "should close tcp server without any err")
 	}(tcp)
-
-	if err != nil {
-		t.Errorf("cannot open tcp port: %s", err)
-		return
-	}
+	assert.NoError(t, err, "should open tcp server without any err")
 
 	config := &LogstashConfig{
-		Hosts:               ":9092",
+		Hosts:               tcp.Addr().String()[4:len(tcp.Addr().String())],
 		Protocol:            "tcp",
 		BufferSize:          8,
 		ConnectionTimeout:   20,
@@ -209,68 +147,54 @@ func TestWriteOnTcpThroughLogstashWithSmallBufferWriterMultiplyGoRoutine(t *test
 	}
 	logStashWriter := config.CreteLogStashAppender(config.Hosts)
 
-	if logStashWriter == nil {
-		t.Errorf("logstash should be created on existing tcp host and opened port 9092")
-	}
-
+	assert.NotNil(t, logStashWriter, "appender should be created on existing tcp host and opened port")
 	defer func(logStashWriter *LogstashAppender) {
 		err := logStashWriter.Close()
-		if err != nil {
-			t.Error("unable to close logstashWriter: ", err.Error())
-		}
+		assert.NoError(t, err, "should close logstash appender without any err")
 	}(logStashWriter)
 
 	testMessageForOneGoRoutine := []byte("first message")
 	testMessageForTwoGoRoutine := []byte("second random message log")
 
 	var wg sync.WaitGroup
+	wg.Add(1)
 	go func(l *LogstashAppender, msg []byte) {
-		wg.Add(1)
 		wg.Done()
 		write, err := l.Write(msg)
-		if err != nil || write != len(msg) {
-			t.Errorf("unable to write on opened tcp connection cause: %s", err.Error())
-			return
-		}
-		return
-	}(logStashWriter, testMessageForOneGoRoutine)
+		assert.NoError(t, err, "should write to appender without any errors")
+		assert.Equal(t, len(testMessageForOneGoRoutine), write, "size of written bytes should be equal")
 
+	}(logStashWriter, testMessageForOneGoRoutine)
+	wg.Add(1)
 	go func(l *LogstashAppender, msg []byte) {
-		wg.Add(1)
 		defer wg.Done()
 		write, err := l.Write(msg)
-		if err != nil || write != len(msg) {
-			t.Errorf("unable to write on opened tcp connection cause: %s", err.Error())
-			return
-		}
-		return
+		assert.NoError(t, err, "should write to appender without any errors")
+		assert.Equal(t, len(testMessageForTwoGoRoutine), write, "size of written bytes should be equal")
 	}(logStashWriter, testMessageForTwoGoRoutine)
 
 	wg.Wait()
 	receivedMessage := make([]byte, 64)
 
 	incomingTcpChannel, err := tcp.Accept()
-	if err != nil {
-		t.Errorf("cannot accept message trough tcp port: %s", err)
-		return
-	}
+
+	assert.NoError(t, err, "should accept on tcp existing server")
+	assert.NotNil(t, incomingTcpChannel, "should get conn on which we can consume messages")
 
 	defer func(accept net.Conn) {
 		err := accept.Close()
-		if err != nil {
-			t.Errorf("cannot close reader channel: %s", err)
-		}
+		assert.NoError(t, err, "should close incoming channel without any err")
 	}(incomingTcpChannel)
 
+	err = incomingTcpChannel.SetReadDeadline(time.Now().Add(time.Second))
+	assert.NoError(t, err, "should set read deadline without any err")
 	read, err := incomingTcpChannel.Read(receivedMessage)
-	if err != nil || read == 0 {
-		t.Errorf("unable to read on opened tcp connection cause: %s", err.Error())
-		return
-	}
 
-	if !strings.Contains(string(receivedMessage), string(testMessageForOneGoRoutine)) && !strings.Contains(string(receivedMessage), string(testMessageForTwoGoRoutine)) {
-		t.Errorf("haven't received all messages, read: '%s' first message: '%s' second message: '%s'", string(receivedMessage), string(testMessageForOneGoRoutine), string(testMessageForTwoGoRoutine))
-	}
+	assert.NoError(t, err, "should read from incoming channel without any err")
+	assert.Equal(t, len(testMessageForTwoGoRoutine)+len(testMessageForOneGoRoutine), read, "should read all bytes")
+
+	assert.Contains(t, string(receivedMessage), string(testMessageForOneGoRoutine), "first message should be received")
+	assert.Contains(t, string(receivedMessage), string(testMessageForTwoGoRoutine), "second message should be received")
 }
 
 func TestWriteOnTcpThroughLogstashOnLostConnectionRoutine(t *testing.T) {
@@ -279,24 +203,11 @@ func TestWriteOnTcpThroughLogstashOnLostConnectionRoutine(t *testing.T) {
 			t.Errorf("The code shouldn't be panicked %s", r)
 		}
 	}()
-
-	tcp, err := net.Listen("tcp", ":9092")
-	defer func(tcp net.Listener) {
-		err := tcp.Close()
-		if e, ok := err.(*net.OpError); ok {
-			if e.Op != "close" {
-				t.Errorf("first connection wasn't closed, so test didn't provide full quilified environment %s", e.Err)
-			}
-		}
-	}(tcp)
-
-	if err != nil {
-		t.Errorf("cannot open tcp port: %s", err)
-		return
-	}
+	tcp, err := net.Listen("tcp", ":0")
+	assert.NoError(t, err, "should open tcp server without any err")
 
 	config := &LogstashConfig{
-		Hosts:               ":9092",
+		Hosts:               tcp.Addr().String()[4:len(tcp.Addr().String())],
 		Protocol:            "tcp",
 		BufferSize:          8,
 		ConnectionTimeout:   20,
@@ -304,73 +215,49 @@ func TestWriteOnTcpThroughLogstashOnLostConnectionRoutine(t *testing.T) {
 	}
 	logStashWriter := config.CreteLogStashAppender(config.Hosts)
 
-	if logStashWriter == nil {
-		t.Errorf("logstash should be created on existing tcp host and opened port 9092")
-	}
-
+	assert.NotNil(t, logStashWriter, "appender should be created on existing tcp host and opened port")
 	defer func(logStashWriter *LogstashAppender) {
 		err := logStashWriter.Close()
-		if err != nil {
-			t.Error("unable to close logstashWriter: ", err.Error())
-		}
+		assert.NoError(t, err, "should close logstash appender without any err")
 	}(logStashWriter)
 
 	err = tcp.Close()
-	if err != nil {
-		t.Errorf("unable to perform close tcp while testing case: %s", err.Error())
-		return
-	}
+	assert.NoError(t, err, "should not get err on closing tcp server")
 
-	_, err = logStashWriter.Write([]byte("first message"))
-	if err != nil {
-		t.Errorf("error_builder should be thrown even if tcp connection is closed: %s", err.Error())
-		return
-	}
+	write, err := logStashWriter.Write([]byte("first message"))
+	assert.NoError(t, err, "should not get any err even if tcp conn is closed")
+	assert.Equal(t, 0, write, "should be written 0 bytes and lost connection")
 
 	receivedMessage := make([]byte, 64)
-	newTcp, err := net.Listen("tcp", ":9092")
+	newTcp, err := net.Listen("tcp", tcp.Addr().String()[4:len(tcp.Addr().String())])
 
-	defer func(tcp net.Listener) {
-		err := tcp.Close()
-		if err != nil {
-			t.Errorf("cannot close second tcp connection: %s", err)
-		}
+	defer func(listen net.Listener) {
+		err := listen.Close()
+		assert.NoError(t, err, "should close new tcp server without any err")
 	}(newTcp)
-	if err != nil {
-		_ = logStashWriter.Close()
-		t.Errorf("uanble to reopen tcp port for test: %s", err.Error())
-	}
+	assert.NoError(t, err, "should open new tcp server without any err")
+
 	time.Sleep(time.Second * 12)
 	secondMessage := []byte("secondMessage")
 
 	incomingTcpChannel, err := newTcp.Accept()
-	if err != nil {
-		t.Errorf("cannot accept message trough tcp port: %s", err)
-	}
-
-	w, err := logStashWriter.Write(secondMessage)
-	if err != nil && w != len(secondMessage) {
-		t.Errorf("should write message cause we open tcp again and there has to be no error_builder: %s", err.Error())
-	}
+	assert.NoError(t, err, "should accept on tcp existing server")
+	assert.NotNil(t, incomingTcpChannel, "should get conn on which we can consume messages")
 
 	defer func(accept net.Conn) {
 		err := accept.Close()
-		if err != nil {
-			t.Errorf("cannot close reader channel: %s", err)
-		}
+		assert.NoError(t, err, "should close incoming channel without any err")
 	}(incomingTcpChannel)
-	err = incomingTcpChannel.SetReadDeadline(time.Now().Add(time.Second * 2))
-	if err != nil {
-		t.Errorf("cannot set read dead line on tcp connect")
-		return
-	}
+
+	w, err := logStashWriter.Write(secondMessage)
+	assert.NoError(t, err, "should write on reopened tcp connection without any err")
+	assert.Equal(t, len(secondMessage), w, "size of written bytes should be equal")
+
+	err = incomingTcpChannel.SetReadDeadline(time.Now().Add(time.Second))
+	assert.NoError(t, err, "should set read deadline without any err")
 
 	read, err := incomingTcpChannel.Read(receivedMessage)
-	if err != nil || read == 0 {
-		t.Errorf("unable to read on opened tcp connection cause: %s", err.Error())
-	}
-
-	if !strings.Contains(string(receivedMessage), string(secondMessage)) {
-		t.Errorf("haven't received all messages, read: '%s' first message: '%s'", string(receivedMessage), string(secondMessage))
-	}
+	assert.NoError(t, err, "should read incoming bytes without any err")
+	assert.Equal(t, len(secondMessage), read, "read bytes should be equal to the message size")
+	assert.Contains(t, string(receivedMessage), string(secondMessage), "received message should contain sent message")
 }

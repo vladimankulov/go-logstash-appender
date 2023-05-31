@@ -1,0 +1,8 @@
+{
+  "profile": "dev",
+  "hosts": "host",
+  "protocol": "tcp",
+  "bufferSize": 8192,
+  "connectionTimeout": 10,
+  "reconnectionTimeout": 20
+}

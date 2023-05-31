@@ -57,6 +57,8 @@ func ClosePool() {
 				if err != nil {
 					return
 				}
+			} else {
+				break
 			}
 		}
 	}
